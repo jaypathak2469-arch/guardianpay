@@ -29,6 +29,11 @@ export function needsGuardianApproval(
   );
 }
 
+// A guardian-linked payee is vetted by the user themselves, so it gets a small
+// flat risk reduction rather than a triggered heuristic (there's nothing "wrong"
+// to explain to the user — it's a positive signal, not a warning).
+const VERIFIED_PAYEE_DISCOUNT = 4;
+
 export function computeRiskScore(input: RiskInput): RiskResult {
   let score = 6;
   const triggered: Heuristic[] = [];
@@ -40,6 +45,7 @@ export function computeRiskScore(input: RiskInput): RiskResult {
 
   if (input.payeeTrust === "unknown") add("unknownPayee");
   if (input.payeeTrust === "suspicious") add("suspiciousPayee");
+  if (input.payeeTrust === "verified") score = Math.max(0, score - VERIFIED_PAYEE_DISCOUNT);
   if (input.reportedPayee) add("reportedPayee");
   if (input.firstTimePayee && input.amount > COOLING_OFF_CONFIG.firstTimeAmountThreshold) {
     add("firstTimeHigh");
@@ -53,5 +59,5 @@ export function computeRiskScore(input: RiskInput): RiskResult {
     add("scamKeyword", Math.min(input.scamKeywordHits * 8, 32) - HEURISTIC_CATALOG.scamKeyword.weight);
   }
 
-  return { score: Math.min(100, Math.round(score)), triggeredHeuristics: triggered };
+  return { score: Math.max(0, Math.min(100, Math.round(score))), triggeredHeuristics: triggered };
 }

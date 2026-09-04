@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Pencil, Plus, Trash2, Users } from "lucide-react";
 import { t } from "@/lib/i18n";
 import { uid } from "@/lib/mock-data";
-import type { GuardianContact, Language, NotifyPreference } from "@/lib/types";
+import type { GuardianContact, Language, NotifyPreference, Payee } from "@/lib/types";
 import { Button } from "./ui/button";
 
 const empty: Omit<GuardianContact, "id"> = {
@@ -17,14 +17,20 @@ const empty: Omit<GuardianContact, "id"> = {
 
 export function GuardianCircleManager({
   guardians,
+  payees,
   language,
   seniorMode,
   onChange,
+  hasTransactionHistory,
+  onGuardianRemoved,
 }: {
   guardians: GuardianContact[];
+  payees: Payee[];
   language: Language;
   seniorMode: boolean;
   onChange: (next: GuardianContact[]) => void;
+  hasTransactionHistory: (payeeId: string) => boolean;
+  onGuardianRemoved: (payeeId: string, keepAsPayee: boolean) => void;
 }) {
   const [editing, setEditing] = useState<GuardianContact | (Omit<GuardianContact, "id"> & { id?: string }) | null>(null);
 
@@ -40,6 +46,18 @@ export function GuardianCircleManager({
 
   const remove = (id: string) => {
     if (guardians.length <= 1) return;
+    const target = guardians.find((g) => g.id === id);
+    const linkedPayee = payees.find((p) => p.guardianId === id);
+
+    if (linkedPayee) {
+      const keepPayee = hasTransactionHistory(linkedPayee.id);
+      const message = keepPayee
+        ? `Remove ${target?.name ?? "this guardian"} from your trusted circle? They'll stay in your payee list — their transaction history is kept — but will lose Guardian-Verified status.`
+        : `Remove ${target?.name ?? "this guardian"} from your trusted circle? They have no transaction history yet, so they'll also be removed from your payee list.`;
+      if (!window.confirm(message)) return;
+      onGuardianRemoved(linkedPayee.id, keepPayee);
+    }
+
     onChange(guardians.filter((g) => g.id !== id));
   };
 

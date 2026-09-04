@@ -1,14 +1,30 @@
 @import "tailwindcss";
 
+/* Tailwind v4: opt into class-based dark mode instead of the media-query
+   default, so our toggle button (adding/removing .dark on a wrapper) works. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --gp-accent: #0f5c6b;
   --gp-accent-dark: #0a414c;
+  --gp-accent-soft: #e6f2f1;
+  --gp-cyan: #22d3c4;
   --gp-ink: #0b1220;
   --gp-danger: #b42318;
   --gp-warn: #d97706;
   --gp-ok: #047857;
-  --background: #f8fafc;
+  --background: #f3f7f7;
   --foreground: #0b1220;
+  --gp-surface: #ffffff;
+  --gp-border: #e2e8f0;
+}
+
+.dark {
+  --gp-accent-soft: rgba(15, 92, 107, 0.25);
+  --background: #0b1220;
+  --foreground: #f3f7f7;
+  --gp-surface: #0f1b2a;
+  --gp-border: rgba(255, 255, 255, 0.1);
 }
 
 html,
@@ -21,7 +37,6 @@ body {
   font-size: 1.2rem;
   color: var(--gp-ink);
 }
-
 .senior-mode p,
 .senior-mode li,
 .senior-mode label {

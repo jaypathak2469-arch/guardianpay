@@ -1,6 +1,6 @@
 export type Language = "en" | "hi" | "ta";
 
-export type TrustLevel = "trusted" | "unknown" | "suspicious";
+export type TrustLevel = "trusted" | "unknown" | "suspicious" | "verified";
 
 export type TransactionStatus =
   | "Completed"
@@ -31,6 +31,10 @@ export interface Payee {
   upiId: string;
   trustLevel: TrustLevel;
   firstTime: boolean;
+  /** True when this payee was created from (or is linked to) a Guardian Circle contact. */
+  isGuardian?: boolean;
+  /** GuardianContact.id this payee is linked to, when isGuardian is true. */
+  guardianId?: string;
 }
 
 export interface Transaction {

@@ -4,14 +4,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   History,
   LayoutDashboard,
+  Moon,
   Send,
   Shield,
   ShieldCheck,
+  Sun,
   Users,
 } from "lucide-react";
 import { useVoiceAlert } from "@/hooks/use-voice-alert";
 import { t } from "@/lib/i18n";
-import { MOCK_GUARDIANS, MOCK_PAYEES, MOCK_TRANSACTIONS, formatInr, uid } from "@/lib/mock-data";
+import {
+  MOCK_GUARDIANS,
+  MOCK_PAYEES,
+  MOCK_TRANSACTIONS,
+  formatInr,
+  syncGuardianPayees,
+  uid,
+} from "@/lib/mock-data";
 import {
   computeRiskScore,
   needsGuardianApproval,
@@ -54,8 +63,19 @@ const VOICE: Record<ThreatScenario, string> = {
   "balance-drain": "voice.bd",
 };
 
+// Fallback context used when a threat/keyword trigger fires with no in-progress
+// transfer draft yet (e.g. demo buttons pressed from the Home tab).
+const DEMO_FALLBACK_AMOUNT = 30000;
+
+function riskTextColor(score: number) {
+  if (score >= 70) return "text-[var(--gp-danger)]";
+  if (score >= 40) return "text-[var(--gp-warn)]";
+  return "text-[var(--gp-ok)]";
+}
+
 export function GuardianDashboard() {
   const [seniorMode, setSeniorMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
   const [language, setLanguage] = useState<Language>("en");
   const [activeTab, setActiveTab] = useState<Tab>("home");
   const [riskScore, setRiskScore] = useState(6);
@@ -73,11 +93,50 @@ export function GuardianDashboard() {
   const [keywordHits, setKeywordHits] = useState<string[]>([]);
   const [pending, setPending] = useState<{ payee: Payee; amount: number; unlock?: CoolingOffLock } | null>(null);
 
+  // Single source of truth for "what transfer is currently being drafted" — shared
+  // by every trigger (draft edits, threats, keyword hits) so they all compute risk
+  // against the same payee/amount instead of each guessing independently.
+  const [draftContext, setDraftContext] = useState<{ payee?: Payee; amount: number }>({
+    payee: undefined,
+    amount: 0,
+  });
+
   const { speak } = useVoiceAlert(language, seniorMode);
   const guardian = guardians[0];
   const addLog = useCallback((message: string, kind: LogEntry["kind"]) => {
     setEventLog((prev) => [{ id: uid("log"), timestamp: new Date().toISOString(), message, kind }, ...prev]);
   }, []);
+
+  // Keep the payee list in sync with the guardian circle: adding/editing a guardian
+  // creates/updates a matching verified payee entry. Removal is handled explicitly
+  // (with confirmation) in onGuardianRemoved below, so it's intentionally not done here.
+  useEffect(() => {
+    setPayees((prev) => syncGuardianPayees(prev, guardians));
+  }, [guardians]);
+
+  const hasTransactionHistory = useCallback(
+    (payeeId: string) => transactions.some((tx) => tx.payeeId === payeeId),
+    [transactions],
+  );
+
+  const onGuardianRemoved = useCallback(
+    (payeeId: string, keepAsPayee: boolean) => {
+      setPayees((prev) =>
+        keepAsPayee
+          ? prev.map((p) =>
+              p.id === payeeId ? { ...p, isGuardian: false, guardianId: undefined, trustLevel: "trusted" } : p,
+            )
+          : prev.filter((p) => p.id !== payeeId),
+      );
+      addLog(
+        keepAsPayee
+          ? "Guardian removed — payee kept, transaction history preserved"
+          : "Guardian and linked payee removed (no transaction history)",
+        "guardian",
+      );
+    },
+    [addLog],
+  );
 
   const recalc = useCallback(
     (
@@ -97,7 +156,17 @@ export function GuardianDashboard() {
         recentLargeTransferCount: recentLarge,
         scamKeywordHits: hits,
       });
-      setRiskScore((prev) => (prev === result.score ? prev : result.score));
+
+      if (result.score !== riskScore) {
+        const previousScore = riskScore;
+        setRiskScore(result.score);
+        if (!silent) {
+          const topHeuristic = [...result.triggeredHeuristics].sort((a, b) => b.weight - a.weight)[0];
+          const cause = topHeuristic ? ` — driven by "${topHeuristic.title}"` : "";
+          addLog(`Risk score changed ${previousScore}% → ${result.score}%${cause}`, "risk");
+        }
+      }
+
       setTriggeredHeuristics((prev) => {
         const seen = new Set(prev.map((h) => h.key));
         let added = false;
@@ -111,10 +180,20 @@ export function GuardianDashboard() {
         }
         return added ? merged : prev;
       });
-      if (!silent) addLog(`Risk score updated to ${result.score}%`, "risk");
+
       return result;
     },
-    [transactions, addLog],
+    [transactions, addLog, riskScore],
+  );
+
+  // Stable identity so TransferFlow's effect only fires when payee/amount actually
+  // change, not on every GuardianDashboard re-render.
+  const onDraftChange = useCallback(
+    (payee: Payee, amount: number) => {
+      setDraftContext({ payee, amount });
+      recalc(payee, amount, activeThreats, keywordHits.length, true);
+    },
+    [recalc, activeThreats, keywordHits],
   );
 
   const onKeywordHits = useCallback((phrases: string[]) => {
@@ -125,14 +204,18 @@ export function GuardianDashboard() {
   useEffect(() => {
     if (keywordHits.length <= prevHits.current) return;
     prevHits.current = keywordHits.length;
-    recalc(payees.find((p) => p.firstTime), 30000, activeThreats, keywordHits.length);
-  }, [keywordHits, payees, activeThreats, recalc]);
+    const contextPayee = draftContext.payee ?? payees.find((p) => p.firstTime) ?? payees[0];
+    const contextAmount = draftContext.amount > 0 ? draftContext.amount : DEMO_FALLBACK_AMOUNT;
+    recalc(contextPayee, contextAmount, activeThreats, keywordHits.length);
+  }, [keywordHits, payees, activeThreats, recalc, draftContext]);
 
   const onThreat = (scenario: ThreatScenario) => {
     const threats = activeThreats.includes(scenario) ? activeThreats : [...activeThreats, scenario];
     setActiveThreats(threats);
     setActiveThreatModal(scenario);
-    recalc(payees.find((p) => p.trustLevel !== "trusted"), 30000, threats, keywordHits.length);
+    const contextPayee = draftContext.payee ?? payees.find((p) => p.trustLevel !== "trusted") ?? payees[0];
+    const contextAmount = draftContext.amount > 0 ? draftContext.amount : DEMO_FALLBACK_AMOUNT;
+    recalc(contextPayee, contextAmount, threats, keywordHits.length);
     addLog(`Interceptor shown: ${scenario}`, "threat");
     speak(VOICE[scenario], { force: true });
   };
@@ -190,18 +273,50 @@ export function GuardianDashboard() {
     [triggeredHeuristics, language],
   );
 
+  const shellClass = seniorMode
+    ? "senior-mode min-h-screen bg-white text-[var(--gp-ink)]"
+    : `min-h-screen text-[var(--gp-ink)] dark:text-white transition-colors ${
+        darkMode ? "dark bg-[#0B1220]" : "bg-[#F3F7F7]"
+      }`;
+
   return (
-    <div className={seniorMode ? "senior-mode min-h-screen bg-white text-[var(--gp-ink)]" : "min-h-screen bg-slate-50 text-[var(--gp-ink)]"}>
-      <header className="border-b border-slate-200 bg-white">
+    <div className={shellClass}>
+      <header
+        className={
+          seniorMode
+            ? "border-b-2 border-slate-300 bg-white"
+            : "sticky top-0 z-20 border-b border-white/20 bg-white/70 backdrop-blur-md dark:border-white/10 dark:bg-[#0B1220]/70"
+        }
+      >
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="h-8 w-8 text-[var(--gp-accent)]" />
+          <div className="flex items-center gap-3">
+            <span
+              className={
+                seniorMode
+                  ? "flex h-11 w-11 items-center justify-center rounded-full bg-[var(--gp-accent)]"
+                  : "flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-[#0F5C6B] to-[#22D3C4]"
+              }
+            >
+              <ShieldCheck className="h-6 w-6 text-white" />
+            </span>
             <div>
-              <p className="text-xl font-bold">GuardianPay</p>
-              <p className="text-xs font-semibold text-slate-800">Protecting vulnerable customers from digital fraud</p>
+              <p className="text-xl font-bold leading-tight">GuardianPay</p>
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                Protecting vulnerable customers from digital fraud
+              </p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {!seniorMode ? (
+              <button
+                type="button"
+                onClick={() => setDarkMode((v) => !v)}
+                aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-teal-50 text-[var(--gp-accent)] transition-transform hover:scale-[1.05] active:scale-[0.95] dark:bg-teal-900/30 dark:text-teal-200"
+              >
+                {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+              </button>
+            ) : null}
             <Button senior={seniorMode} variant={seniorMode ? "primary" : "secondary"} onClick={() => setSeniorMode((v) => !v)}>
               {t(seniorMode ? "mode.senior" : "mode.standard", language)}
             </Button>
@@ -209,19 +324,30 @@ export function GuardianDashboard() {
           </div>
         </div>
         <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 pb-3">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 font-semibold ${seniorMode ? "min-h-16" : "min-h-10"} ${
-                activeTab === tab.id ? "bg-[var(--gp-accent)] text-white" : "bg-slate-100 text-slate-900"
-              }`}
-            >
-              <tab.icon className="h-4 w-4" />
-              {t(`tab.${tab.id}`, language)}
-            </button>
-          ))}
+          {TABS.map((tab) => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 font-semibold transition-all ${
+                  seniorMode ? "min-h-16" : "min-h-10"
+                } ${
+                  active
+                    ? seniorMode
+                      ? "bg-[var(--gp-accent)] text-white"
+                      : "bg-gradient-to-r from-[#0F5C6B] to-[#22D3C4] text-white shadow-sm"
+                    : seniorMode
+                      ? "bg-slate-100 text-slate-900"
+                      : "bg-slate-900/5 text-slate-700 hover:bg-slate-900/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10"
+                }`}
+              >
+                <tab.icon className="h-4 w-4" />
+                {t(`tab.${tab.id}`, language)}
+              </button>
+            );
+          })}
         </nav>
       </header>
       <main className="mx-auto max-w-6xl space-y-6 px-4 py-6">
@@ -229,16 +355,77 @@ export function GuardianDashboard() {
           <ThreatSimulatorPanel seniorMode={seniorMode} onTrigger={onThreat} />
         ) : null}
         {activeTab === "home" ? (
-          <>
-            <div className="grid gap-4 md:grid-cols-3">
-              <StatCard label="Live risk" value={`${riskScore}%`} hint="From explainable rules" icon={<Shield className="h-6 w-6" />} />
-              <StatCard label="Guardians" value={String(guardians.length)} hint={guardian?.name} icon={<Users className="h-6 w-6" />} />
-              <StatCard label="Locks" value={String(coolingOffLocks.length)} hint="24h cooling-off" />
+          <div className="grid gap-4 md:grid-cols-4 md:grid-rows-2">
+            <div
+              className={
+                seniorMode
+                  ? "rounded-2xl border-2 border-slate-300 bg-white p-6 md:col-span-2 md:row-span-2"
+                  : "relative overflow-hidden rounded-2xl p-[1px] transition-transform hover:scale-[1.01] md:col-span-2 md:row-span-2"
+              }
+              style={
+                seniorMode
+                  ? undefined
+                  : { backgroundImage: "linear-gradient(135deg, #0F5C6B, #22D3C4)" }
+              }
+            >
+              <div
+                className={
+                  seniorMode
+                    ? ""
+                    : "flex h-full flex-col justify-between rounded-2xl bg-white p-6 dark:bg-[#0F1B2A]"
+                }
+              >
+                <div className="flex items-center gap-2">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-teal-50 dark:bg-teal-900/30">
+                    <Shield className="h-5 w-5 text-[var(--gp-accent)]" />
+                  </span>
+                  <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">Live risk score</p>
+                </div>
+                <div className="mt-4">
+                  <span className={`text-6xl font-bold tabular-nums ${riskTextColor(riskScore)}`}>{riskScore}</span>
+                  <span className={`text-2xl font-bold ${riskTextColor(riskScore)}`}>%</span>
+                </div>
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  From explainable rules — updates live as you draft a transfer
+                </p>
+              </div>
             </div>
-          </>
+            <StatCard label="Guardians" value={String(guardians.length)} hint={guardian?.name} icon={<Users className="h-6 w-6" />} />
+            <StatCard label="Locks" value={String(coolingOffLocks.length)} hint="24h cooling-off" />
+            <div
+              className={
+                seniorMode
+                  ? "rounded-2xl border-2 border-slate-300 bg-white p-5 md:col-span-2"
+                  : "rounded-2xl border border-white/40 bg-white/60 p-5 shadow-sm backdrop-blur-sm transition-transform hover:scale-[1.01] dark:border-white/10 dark:bg-white/5 md:col-span-2"
+              }
+            >
+              <div className="flex items-center gap-2">
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-teal-50 dark:bg-teal-900/30">
+                  <Send className="h-5 w-5 text-[var(--gp-accent)]" />
+                </span>
+                <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">Quick action</p>
+              </div>
+              <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
+                Ready to send money? We&apos;ll screen every transfer against your trusted circle in real time.
+              </p>
+              <Button
+                senior={seniorMode}
+                className="mt-3"
+                onClick={() => setActiveTab("transfer")}
+              >
+                Go to Send money
+              </Button>
+            </div>
+          </div>
         ) : null}
         {activeTab === "transfer" ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div
+            className={
+              seniorMode
+                ? "rounded-xl border-2 border-slate-300 bg-white p-5"
+                : "rounded-2xl border border-white/40 bg-white/70 p-5 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5"
+            }
+          >
             <h1 className={`mb-4 font-bold ${seniorMode ? "text-3xl" : "text-2xl"}`}>Send money</h1>
             <TransferFlow
               seniorMode={seniorMode}
@@ -247,9 +434,7 @@ export function GuardianDashboard() {
               coolingOffLocks={coolingOffLocks}
               onSubmit={onSubmit}
               onUnlockRequest={onUnlock}
-              onDraftChange={(payee, amount) =>
-                recalc(payee, amount, activeThreats, keywordHits.length, true)
-              }
+              onDraftChange={onDraftChange}
             />
           </div>
         ) : null}
@@ -273,7 +458,15 @@ export function GuardianDashboard() {
           />
         ) : null}
         {activeTab === "guardians" ? (
-          <GuardianCircleManager guardians={guardians} language={language} seniorMode={seniorMode} onChange={setGuardians} />
+          <GuardianCircleManager
+            guardians={guardians}
+            payees={payees}
+            language={language}
+            seniorMode={seniorMode}
+            onChange={setGuardians}
+            hasTransactionHistory={hasTransactionHistory}
+            onGuardianRemoved={onGuardianRemoved}
+          />
         ) : null}
       </main>
       {activeThreatModal ? (

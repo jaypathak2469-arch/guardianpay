@@ -206,3 +206,73 @@ export function formatInr(amount: number): string {
 export function uid(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Guardian <-> Payee linking
+// ─────────────────────────────────────────────────────────────
+
+function slugify(input: string): string {
+  const clean = input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "");
+  return clean.slice(0, 20) || "guardian";
+}
+
+/** Deterministic payee id for a given guardian, so the link survives re-renders. */
+export function guardianPayeeId(guardianId: string): string {
+  return `payee-guardian-${guardianId}`;
+}
+
+/** Build a fresh payee entry from a guardian contact. */
+export function guardianToPayee(guardian: GuardianContact): Payee {
+  return {
+    id: guardianPayeeId(guardian.id),
+    name: guardian.name,
+    upiId: `${slugify(guardian.name)}@guardian.trust`,
+    trustLevel: "verified",
+    firstTime: false,
+    isGuardian: true,
+    guardianId: guardian.id,
+  };
+}
+
+/**
+ * Reconciles the payee list against the current guardians list:
+ * - creates a payee for any guardian that doesn't have one yet
+ * - keeps an existing linked payee's name/trustLevel/isGuardian in sync if the
+ *   guardian was edited
+ * - never removes a payee — removal (and its confirmation) is handled explicitly
+ *   in the dashboard when a guardian is deleted, so transaction history is never
+ *   silently dropped here.
+ *
+ * Returns the same array reference if nothing needed to change, so it's safe to
+ * call from a useEffect without causing extra renders.
+ */
+export function syncGuardianPayees(payees: Payee[], guardians: GuardianContact[]): Payee[] {
+  const byGuardianId = new Map(
+    payees.filter((p) => p.guardianId).map((p) => [p.guardianId as string, p]),
+  );
+  let changed = false;
+  const next = [...payees];
+
+  for (const guardian of guardians) {
+    const existing = byGuardianId.get(guardian.id);
+    if (!existing) {
+      next.push(guardianToPayee(guardian));
+      changed = true;
+      continue;
+    }
+    const needsUpdate =
+      existing.name !== guardian.name ||
+      existing.trustLevel !== "verified" ||
+      !existing.isGuardian;
+    if (needsUpdate) {
+      const idx = next.findIndex((p) => p.id === existing.id);
+      next[idx] = { ...existing, name: guardian.name, trustLevel: "verified", isGuardian: true };
+      changed = true;
+    }
+  }
+
+  return changed ? next : payees;
+}
