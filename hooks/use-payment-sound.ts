@@ -7,12 +7,13 @@ type Kind = "success" | "blocked" | "pending";
 export function usePaymentSound() {
   const ctxRef = useRef<AudioContext | null>(null);
 
+  // Must be called synchronously inside a user-gesture handler (click), not
+  // after any setTimeout/delay — otherwise browsers on a low-trust/new domain
+  // will refuse to unlock audio and every tone after this becomes silent.
   const unlock = useCallback(() => {
     if (typeof window === "undefined") return;
     if (!ctxRef.current) {
-      const Ctor =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!Ctor) return;
       ctxRef.current = new Ctor();
     }
@@ -22,14 +23,7 @@ export function usePaymentSound() {
   }, []);
 
   const tone = useCallback(
-    (
-      ctx: AudioContext,
-      freq: number,
-      startAt: number,
-      duration: number,
-      type: OscillatorType,
-      peak = 0.18,
-    ) => {
+    (ctx: AudioContext, freq: number, startAt: number, duration: number, type: OscillatorType, peak = 0.18) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = type;
@@ -62,7 +56,7 @@ export function usePaymentSound() {
           tone(ctx, 220, now + 0.14, 0.24, "square", 0.1);
         }
       } catch {
-        // Never let audio failures crash UI transitions
+        // Never let a blocked/failed audio call break the payment flow.
       }
     },
     [tone],
