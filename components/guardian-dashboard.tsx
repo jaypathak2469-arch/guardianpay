@@ -221,7 +221,7 @@ export function GuardianDashboard() {
     addLog(`${status}: ${formatInr(amount)} to ${payee.name}`, "transaction");
   };
 
-  const onSubmit = (payee: Payee, amount: number) => {
+  const onSubmit = (payee: Payee, amount: number): "completed" | "guardian-pending" | "locked" => {
     const result = recalc(payee, amount, activeThreats, keywordHits.length);
     if (shouldLockFirstTimePayee(amount, payee.firstTime)) {
       const txId = uid("tx");
@@ -239,16 +239,17 @@ export function GuardianDashboard() {
       ]);
       addLog(`Locked 24h: first-time payee ${payee.name}`, "transaction");
       speak("voice.lock", { force: true });
-      return;
+      return "locked";
     }
     if (needsGuardianApproval(result.score, amount, payee.trustLevel)) {
       setPending({ payee, amount });
       setGuardianModalOpen(true);
       addLog(`Guardian notified for ${payee.name}`, "guardian");
       speak("voice.highRisk", { force: true });
-      return;
+      return "guardian-pending";
     }
     completeTx(payee, amount, "Completed");
+    return "completed";
   };
 
   const onUnlock = (lock: CoolingOffLock) => {
@@ -262,6 +263,19 @@ export function GuardianDashboard() {
     () => triggeredHeuristics.slice(0, 4).map((h) => t(h.explanationKey, language)),
     [triggeredHeuristics, language],
   );
+
+  const recentPayeeIds = useMemo(() => {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const tx of transactions) {
+      if (tx.status !== "Completed" && tx.status !== "Guardian-Approved") continue;
+      if (seen.has(tx.payeeId)) continue;
+      seen.add(tx.payeeId);
+      ids.push(tx.payeeId);
+      if (ids.length >= 4) break;
+    }
+    return ids;
+  }, [transactions]);
 
   const shellClass = seniorMode
     ? "senior-mode min-h-screen bg-white text-[var(--gp-ink)]"
@@ -423,6 +437,7 @@ export function GuardianDashboard() {
               payees={payees}
               coolingOffLocks={coolingOffLocks}
               riskScore={riskScore}
+              recentPayeeIds={recentPayeeIds}
               onSubmit={onSubmit}
               onUnlockRequest={onUnlock}
               onDraftChange={onDraftChange}
