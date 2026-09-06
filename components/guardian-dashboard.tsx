@@ -63,8 +63,6 @@ const VOICE: Record<ThreatScenario, string> = {
   "balance-drain": "voice.bd",
 };
 
-// Fallback context used when a threat/keyword trigger fires with no in-progress
-// transfer draft yet (e.g. demo buttons pressed from the Home tab).
 const DEMO_FALLBACK_AMOUNT = 30000;
 
 function riskTextColor(score: number) {
@@ -93,9 +91,6 @@ export function GuardianDashboard() {
   const [keywordHits, setKeywordHits] = useState<string[]>([]);
   const [pending, setPending] = useState<{ payee: Payee; amount: number; unlock?: CoolingOffLock } | null>(null);
 
-  // Single source of truth for "what transfer is currently being drafted" — shared
-  // by every trigger (draft edits, threats, keyword hits) so they all compute risk
-  // against the same payee/amount instead of each guessing independently.
   const [draftContext, setDraftContext] = useState<{ payee?: Payee; amount: number }>({
     payee: undefined,
     amount: 0,
@@ -107,9 +102,6 @@ export function GuardianDashboard() {
     setEventLog((prev) => [{ id: uid("log"), timestamp: new Date().toISOString(), message, kind }, ...prev]);
   }, []);
 
-  // Keep the payee list in sync with the guardian circle: adding/editing a guardian
-  // creates/updates a matching verified payee entry. Removal is handled explicitly
-  // (with confirmation) in onGuardianRemoved below, so it's intentionally not done here.
   useEffect(() => {
     setPayees((prev) => syncGuardianPayees(prev, guardians));
   }, [guardians]);
@@ -186,8 +178,6 @@ export function GuardianDashboard() {
     [transactions, addLog, riskScore],
   );
 
-  // Stable identity so TransferFlow's effect only fires when payee/amount actually
-  // change, not on every GuardianDashboard re-render.
   const onDraftChange = useCallback(
     (payee: Payee, amount: number) => {
       setDraftContext({ payee, amount });
@@ -432,6 +422,7 @@ export function GuardianDashboard() {
               language={language}
               payees={payees}
               coolingOffLocks={coolingOffLocks}
+              riskScore={riskScore}
               onSubmit={onSubmit}
               onUnlockRequest={onUnlock}
               onDraftChange={onDraftChange}
