@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Clock, Sparkles } from "lucide-react";
 import { usePaymentSound } from "@/hooks/use-payment-sound";
-
 import { formatInr } from "@/lib/mock-data";
 import type { CoolingOffLock, Language, Payee } from "@/lib/types";
 import { PaymentStatusOverlay, type PaymentPhase } from "./payment-status-overlay";
@@ -26,7 +25,7 @@ export function TransferFlow({
   coolingOffLocks: CoolingOffLock[];
   riskScore?: number;
   recentPayeeIds?: string[];
-  onSubmit: (payee: Payee, amount: number) => void | string;
+  onSubmit: (payee: Payee, amount: number) => "completed" | "guardian-pending" | "locked" | void;
   onUnlockRequest: (lock: CoolingOffLock) => void;
   onDraftChange?: (payee: Payee, amount: number) => void;
 }) {
@@ -34,7 +33,7 @@ export function TransferFlow({
   const [amountStr, setAmountStr] = useState<string>("5000");
   const [phase, setPhase] = useState<PaymentPhase>(null);
 
-  const { playSuccess, playBlocked, playPending } = usePaymentSound();
+  const { unlockAudio, playSuccess, playBlocked, playPending } = usePaymentSound();
 
   const selectedPayee = payees.find((p) => p.id === selectedPayeeId) ?? payees[0];
   const amount = Number(amountStr) || 0;
@@ -50,26 +49,39 @@ export function TransferFlow({
   );
 
   const handleExecute = () => {
-    if (!selectedPayee || amount <= 0) return;
+    if (!selectedPayee || amount <= 0 || activeLock || phase) return;
+
+    // 1. Must unlock audio synchronously inside user-gesture event
+    unlockAudio();
+
+    const sentPayee = selectedPayee;
+    const sentAmount = amount;
+
     setPhase("sending");
 
-    setTimeout(() => {
-      const result = onSubmit(selectedPayee, amount);
+    window.setTimeout(() => {
+      try {
+        const result = onSubmit(sentPayee, sentAmount);
 
-      if (result === "locked") {
+        if (result === "locked") {
+          setPhase("locked");
+          playBlocked();
+        } else if (result === "guardian-pending") {
+          setPhase("pending");
+          playPending();
+        } else {
+          setPhase("success");
+          playSuccess();
+        }
+      } catch (err) {
+        console.error("Submission failed:", err);
         setPhase("locked");
         playBlocked();
-      } else if (result === "guardian-pending") {
-        setPhase("pending");
-        playPending();
-      } else {
-        setPhase("success");
-        playSuccess();
       }
 
-      setTimeout(() => {
+      window.setTimeout(() => {
         setPhase(null);
-      }, 2500);
+      }, 2000);
     }, 900);
   };
 
@@ -181,7 +193,7 @@ export function TransferFlow({
         </div>
       </div>
 
-      {/* Risk Gauge Indicator & Warnings */}
+      {/* Live Risk Gauge */}
       <div className="rounded-2xl border border-white/40 bg-white/50 p-4 backdrop-blur-sm dark:border-white/10 dark:bg-white/5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -216,7 +228,7 @@ export function TransferFlow({
         </div>
       </div>
 
-      {/* Cooling-off Notice if Locked */}
+      {/* Cooling-off Alert */}
       {activeLock ? (
         <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-200">
           <div className="flex items-start gap-3">
@@ -238,12 +250,12 @@ export function TransferFlow({
         </div>
       ) : null}
 
-      {/* Submit Button */}
+      {/* Submit */}
       <Button
         senior={seniorMode}
         className="w-full py-4 text-base font-bold shadow-lg"
         onClick={handleExecute}
-        disabled={amount <= 0}
+        disabled={amount <= 0 || !!activeLock}
       >
         Send {formatInr(amount)} to {selectedPayee?.name ?? "Payee"} <ArrowRight className="ml-2 h-4 w-4" />
       </Button>
