@@ -56,7 +56,7 @@ export function PaymentStatusOverlay({
           <Loader2 className="mx-auto h-14 w-14 animate-spin text-[var(--gp-accent)]" />
         ) : (
           <div
-            className="motion-safe:animate-[pop-in_0.35s_ease-out] mx-auto flex h-16 w-16 items-center justify-center rounded-full"
+            className="animate-pop-in mx-auto flex h-16 w-16 items-center justify-center rounded-full"
             style={{ backgroundColor: phase === "success" ? "var(--gp-ok)" : "var(--gp-warn)" }}
           >
             {phase === "success" ? (
@@ -67,7 +67,8 @@ export function PaymentStatusOverlay({
                   strokeWidth="2.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="motion-safe:[stroke-dasharray:24] motion-safe:[stroke-dashoffset:24] motion-safe:animate-[draw-check_0.4s_ease-out_0.1s_forwards]"
+                  style={{ strokeDasharray: 24, strokeDashoffset: 24 }}
+                  className="animate-draw-check"
                 />
               </svg>
             ) : phase === "pending" ? (
